@@ -1,0 +1,22 @@
+# List python dependencies here to be installed at the start of the
+# notebook. Libraries can be removed from the list when they get shipped in
+# the container supporting the science use case in question.
+#acstools
+#astropy
+#astroquery>=0.4.7.dev0
+#requests
+#hpgeom
+#lightkurve
+matplotlib
+numpy
+pandas
+pyarrow
+#pyvo
+scikit-learn
+#scipy
+torch
+tqdm
+#alerce
+#umap-learn[plot]
+#git+https://github.com/sevamoo/SOMPY
+#numba
