@@ -143,7 +143,6 @@ fig, axes = plt.subplots(nrows=num_bands, figsize=(14, 10), sharex=True)
 
 for i, (band, ax) in enumerate(zip(bands_inlc, axes.flatten())):
     oid = max_oid_per_band[band]
-    # Extraer datos para cada banda del AGN con más mediciones
     data = df_lc.xs((oid, band), level=('objectid', 'band'))
     if not data.empty:
         ax.plot(data.index.get_level_values('time'), data['flux'], marker='o', linestyle='-', color=colors[i], label=f'Flux for AGN {oid}', alpha=0.7)
@@ -201,7 +200,7 @@ df_lc['flux_norm'] = normalized_fluxes.flatten()
 
 # +
 # Select the first subset_size object IDs
-subset_size = 100
+subset_size = 80000
 obj_ids_subset = df_lc.index.get_level_values('objectid').unique()[:subset_size]
 #obj_ids_subset = df_lc.index.get_level_values('objectid').unique()
 
@@ -217,7 +216,9 @@ f.close()
 
 # #### Fill the sequences with padding
 
+# + [markdown] jp-MarkdownHeadingCollapsed=true
 # ##### Without normalization
+# -
 
 def unify_lc_for_rnn_multi_band(df_lc, redshifts, max_length_per_band, bands_inlc=['zg', 'zr', 'zi', 'W1', 'W2'], padding_value=-1):
     objids = df_lc.index.get_level_values('objectid').unique()
@@ -257,17 +258,17 @@ def unify_lc_for_rnn_multi_band(df_lc, redshifts, max_length_per_band, bands_inl
                         obj_fluxes.extend(padded_y)
                     else:
                         break
-            #print(len(obj_times),sum(max_length_per_band.values())) 
             if len(obj_times) == sum(max_length_per_band.values()):
                 padded_times_all.append(obj_times)
                 padded_fluxes_all.append(obj_fluxes)
-    #print(padded_times_all)
     padded_times_all = np.array(padded_times_all, dtype="float32")
     padded_fluxes_all = np.array(padded_fluxes_all, dtype="float32")
     return padded_times_all, padded_fluxes_all
 
 
+# + [markdown] jp-MarkdownHeadingCollapsed=true
 # ##### With normalization
+# -
 
 def unify_lc_for_rnn_multi_band(df_lc, redshifts, max_length_per_band, bands_inlc=['zg', 'zr', 'zi', 'W1', 'W2'], padding_value=-1):
     objids = df_lc.index.get_level_values('objectid').unique()
@@ -307,7 +308,6 @@ def unify_lc_for_rnn_multi_band(df_lc, redshifts, max_length_per_band, bands_inl
                         obj_fluxes.extend(padded_y)
                     else:
                         break
-            #print(len(obj_times),sum(max_length_per_band.values())) 
             if len(obj_times) == sum(max_length_per_band.values()):
                 padded_times_all.append(obj_times)
                 padded_fluxes_all.append(obj_fluxes)
@@ -400,7 +400,6 @@ def unify_lc_for_rnn_multi_band_train_test(df_lc, redshifts, max_length_per_band
                         obj_test_idx[band] = test_indices
                         obj_test_idx_accum.extend(test_indices + cumulative_length)
                         cumulative_length += max_length_per_band[band]
-                        #print(len(x_train), len(x_test),  max_length_per_band_test[band], padded_x_test)
             if len(obj_times_train) == train_count: # and len(obj_times_test) == test_count:
                 padded_times_train_all.append(obj_times_train)
                 padded_fluxes_train_all.append(obj_fluxes_train)
@@ -414,7 +413,6 @@ def unify_lc_for_rnn_multi_band_train_test(df_lc, redshifts, max_length_per_band
     padded_times_test_all = np.array(padded_times_test_all, dtype="float32")
     padded_fluxes_test_all = np.array(padded_fluxes_test_all, dtype="float32")
     
-    #print(max_length_per_band_test)
     return padded_times_train_all, padded_fluxes_train_all, padded_times_test_all, padded_fluxes_test_all, padded_test_idx_all,padded_test_idx_accum, max_length_per_band_train, max_length_per_band_test
 
 # +
@@ -455,37 +453,66 @@ print(padded_times_test[0][0],padded_fluxes_test[0][0])
 
 # ### Build the model
 
-class MultiBandTimeSeriesBRNN(nn.Module):
+class CustomMultiBandTimeSeriesBRNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=2):
-        super(MultiBandTimeSeriesBRNN, self).__init__()
-        # Bidirectional LSTM
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
-        # NN layer
-        self.fc = nn.Linear(hidden_size * 2, 1) 
+        super(CustomMultiBandTimeSeriesBRNN, self).__init__()
+        # Forward LSTM
+        self.lstm_forward = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=False)
+        # Backward LSTM
+        self.lstm_backward = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=False)
+        
+        # Adding additional neural network layers
+        self.intermediate_fc = nn.Linear(hidden_size * 2, hidden_size)  # Additional layer
+        self.activation = nn.ReLU()  # Activation layer
+        
+        # Output layer
+        self.fc = nn.Linear(hidden_size, 1) 
 
-    def forward(self, x):
+    def forward(self, x):        
         batch_size, seq_len, _ = x.size()
-        h_0 = torch.zeros(self.lstm.num_layers * 2, batch_size , self.lstm.hidden_size).to(x.device)  # x2 for bidirectional
-        c_0 = torch.zeros(self.lstm.num_layers * 2, batch_size , self.lstm.hidden_size).to(x.device)
+        
+        # Initialize hidden and cell states for forward LSTM
+        h_0_forward = torch.zeros(self.lstm_forward.num_layers, batch_size, self.lstm_forward.hidden_size).to(x.device)
+        c_0_forward = torch.zeros(self.lstm_forward.num_layers, batch_size, self.lstm_forward.hidden_size).to(x.device)
+        # Initialize hidden and cell states for backward LSTM
+        h_0_backward = torch.zeros(self.lstm_backward.num_layers, batch_size, self.lstm_backward.hidden_size).to(x.device)
+        c_0_backward = torch.zeros(self.lstm_backward.num_layers, batch_size, self.lstm_backward.hidden_size).to(x.device)
+        
+        # Compute forward and backward outputs
+        out_forward, _ = self.lstm_forward(x, (h_0_forward, c_0_forward))
+        x_backward = torch.flip(x, [1])
+        out_backward, _ = self.lstm_backward(x_backward, (h_0_backward, c_0_backward))
+        out_backward = torch.flip(out_backward, [1])
 
-        out, _ = self.lstm(x, (h_0, c_0))
-        out = self.fc(out)
+        # Concatenate the outputs from both directions
+        out_combined = torch.cat((out_forward, out_backward), dim=1)
+        
+        # Adjust the indices for output concatenation
+        out_forward_adjusted = out_forward[:, :-2, :]  # Remove the last two time step
+        out_backward_adjusted = out_backward[:, 2:, :]  # Remove the first two time step
+
+        # Concatenate adjusted outputs
+        out_combined = torch.cat((out_forward_adjusted, out_backward_adjusted), dim=2)
+        
+        # Apply the additional neural network layers
+        out_intermediate = self.intermediate_fc(out_combined)
+        out_activated = self.activation(out_intermediate)
+
+
+        # Pass through the fully connected layer
+        out = self.fc(out_activated)
+        
         return out
-
 
 # +
 # Define the model parameters
 input_size = 2  # Time and flux as input
-#hidden_size = 512
-#hidden_size = 256
-#hidden_size = 64
-hidden_size = 32
-num_bands = len(bands_inlc)  # Number of bands
+hidden_size = 1024
 num_layers = 2
 
 padding_value = -1
 # Instantiate the model
-model = MultiBandTimeSeriesBRNN(input_size, hidden_size, num_layers)
+model = CustomMultiBandTimeSeriesBRNN(input_size, hidden_size, num_layers)
 model.to(device)
 
 # Define loss and optimizer
@@ -498,7 +525,7 @@ batch_size = 64
 dataset = TensorDataset(input_train_tensor, target_train_tensor)
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-num_epochs = 2
+num_epochs = 10
 
 # Print the model summary
 print(model)
@@ -517,6 +544,8 @@ f.close()
 
 # ## Train the Model
 
+# ### Custom BRNN
+
 # +
 wandb.finish()
 project_name = 'BRNN'
@@ -533,10 +562,17 @@ if not os.path.exists(os.path.join(base_directory, 'models')):
     os.makedirs(os.path.join(base_directory, 'models'))
 
 f = open(os.path.join(base_directory, 'BRRN_log_run.txt'), 'a')
+current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S %Z")
+current_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+f.write(f"\nTime: {current_time}\nDate: {current_date}\n")
 f.write("\nModel Training\n")
 f.write(f"\nProject Name: {run_name}\n")
 f.write(f"Run Name: {project_name}\n\n")
 total_time = 0
+
+
+f.close() # Close file
+f = open(os.path.join(base_directory, 'BRRN_log_run.txt'), 'a')
 
 # Training the model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -547,20 +583,25 @@ for epoch in range(num_epochs):
     start_time = time.time()  # Start chrono
     model.train()
     running_loss = 0.0
-    for i, (inputs, targets) in enumerate(dataloader):
+    for i, (inputs, targets) in tqdm(enumerate(dataloader), total=len(dataloader), desc="Processing"):
         # Move data to the device
         inputs, targets = inputs.to(device), targets.to(device)
         
-        # Mask the padded values
-        mask = inputs[:, :, 0] != padding_value
+        targets_adjusted = targets[:, 1:-1]
+        
         
         # Forward pass
         outputs = model(inputs)
         
+        if outputs.shape[1] != targets_adjusted.shape[1]:
+            raise ValueError("Output and target sequence lengths do not match.")
+        
+        # Mask the padded values
+        mask = inputs[:, 1:-1, 0] != padding_value
         # Apply the mask to the outputs and targets
         mask_expanded = mask.unsqueeze(-1).expand_as(outputs)
         outputs_masked = outputs[mask_expanded].view(-1)
-        targets_masked = targets[mask].view(-1)
+        targets_masked = targets_adjusted[mask].view(-1)
         
         loss = criterion(outputs_masked, targets_masked).mean()
         
@@ -575,7 +616,7 @@ for epoch in range(num_epochs):
     avg_loss = running_loss / len(dataloader)
     wandb.log({"epoch": epoch + 1, "loss": avg_loss})
     
-    print(f'Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}')
+    print(f'Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:f}')
     
     # Save the best model checkpoint
     if avg_loss < best_loss:
@@ -587,9 +628,14 @@ for epoch in range(num_epochs):
     epoch_time = end_time - start_time  
     total_time += epoch_time
     f.write(f"Epoch {epoch + 1} Time: {epoch_time}  Loss: {avg_loss}\n")
+    f.close() # Close file
+    f = open(os.path.join(base_directory, 'BRRN_log_run.txt'), 'a')
 
 
 f.write(f"\nTotal time: {total_time}\nAvarage Time per Epoch: {total_time/num_epochs}\n")
+current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S %Z")
+current_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+f.write(f"\nTime: {current_time}\nDate: {current_date}\n")
 f.close() # Close file
 
 # Save the final model checkpoint
@@ -605,12 +651,9 @@ print('Training complete.')
 # ### Test Predicting all data from 1 AGN
 
 valid_data_found = False
-obj_id = 0
+obj_id = 1
 while obj_id < len(padded_times_train) and not valid_data_found:
     try:
-        #random_obj_id = random.choice(df_lc.index.get_level_values('objectid').unique())
-        #random_obj_id = 0
-        
         # Extract the data for the selected object
         df_lc_single = df_lc.loc[[obj_id]]
         redshifts_single = {obj_id: redshifts[obj_id]}
@@ -624,7 +667,6 @@ while obj_id < len(padded_times_train) and not valid_data_found:
         
         # Combine time and flux into a single input tensor
         input_tensor_single = torch.stack((padded_times_tensor_single, padded_fluxes_tensor_single), dim=-1)  # (num_bands, seq_len, 2)
-        target_tensor_single = padded_fluxes_tensor_single.unsqueeze(-1)  # (num_bands, seq_len, 1)
         
         input_tensor_single = input_tensor_single.to(device)
         
@@ -632,12 +674,9 @@ while obj_id < len(padded_times_train) and not valid_data_found:
         model.eval()
         with torch.no_grad():
             predictions_single = model(input_tensor_single)
-            #predictions_single = predictions_single.squeeze(0).cpu().numpy()  # Remove batch dimension
             predictions_single = predictions_single.cpu()  # Move tensor to CPU
         
-        # Apply the mask to the predictions
-        mask = padded_times_tensor_single != padding_value
-        predicted_fluxes_masked_single = np.where(mask.cpu().numpy(), predictions_single.squeeze(-1), np.nan)
+        print(len(input_tensor_single[0]),len(predictions_single[0]))
         
         valid_data_found = True
     except Exception as e:
@@ -646,50 +685,89 @@ while obj_id < len(padded_times_train) and not valid_data_found:
 
 
 # +
+
+def process_band_data(padded_times, padded_fluxes, predictions, max_length_per_band, padding_value = -1):
+    times_dict = {}
+    times_dict_pred = {}
+    fluxes_dict = {}
+    predictions_dict = {}
+    mask_dict = {}
+    mask_pred_dict = {}
+
+    start_idx = 0
+    start_idx_pred = 0
+
+    for i, (band, length) in enumerate(max_length_per_band.items()):
+        end_idx = start_idx + length
+        end_idx_pred = start_idx_pred + length
+
+        # Adjusting prediction end index for the first and last bands
+        if i == 0 or i == len(max_length_per_band) - 1:
+            end_idx_pred -= 1
+
+        # Extracting times, fluxes, and predictions for the current band
+        times_band = padded_times[start_idx:end_idx]
+        fluxes_band = padded_fluxes[start_idx:end_idx]
+        predictions_band = predictions[start_idx_pred:end_idx_pred]
+
+        # Create masks to filter out padding values
+        mask = times_band != padding_value
+        if i == 0:
+            mask_pred = times_band[1:] != padding_value
+            times_dict_pred[band] = times_band[1:][mask_pred]
+        elif  i == len(max_length_per_band) - 1:
+            mask_pred = times_band[:-1] != padding_value
+            times_dict_pred[band] = times_band[:-1][mask_pred]
+        else: 
+            mask_pred = mask
+            times_dict_pred[band] = times_band[mask_pred]
+            
+        # Applying masks
+        times_dict[band] = times_band[mask]
+        fluxes_dict[band] = fluxes_band[mask]
+        predictions_dict[band] = predictions_band[mask_pred]
+        mask_dict[band] = mask
+        mask_pred_dict[band] = mask_pred
+
+        # Update indices for the next band
+        start_idx = end_idx
+        start_idx_pred = end_idx_pred
+
+    return times_dict, fluxes_dict, times_dict_pred, predictions_dict, mask_dict, mask_pred_dict
+
+
+
+
+
+
 def plot_band_data(padded_times, padded_fluxes, predictions, max_length_per_band, padding_value=-1):
     # Start index for each band in the concatenated array
-    start_idx = 0
     fig, axes = plt.subplots(nrows=len(bands_inlc), figsize=(14, 10))
-    
+    # Adjust first and last item not predicted
+    padded_times_adj = padded_times[0]
+    padded_fluxes_adj = padded_fluxes[0]
+
+
+    times, fluxes, times_pred, predictions, masks, mask_preds = process_band_data(padded_times[0], padded_fluxes[0], predictions[0], max_length_per_band, padding_value)
     # Iterate over each band using the lengths specifiedprint
     for i, (band, length) in enumerate(max_length_per_band.items()):
-        # End index for the current band
-        end_idx = start_idx + length
-        
-        # Extract times, fluxes, and predictions for the current band
-        times_band = padded_times[0][start_idx:end_idx]
-        fluxes_band = padded_fluxes[0][start_idx:end_idx]
-        predictions_band = predictions[0][start_idx:end_idx]
-        #print(len(times_band),start_idx,end_idx ,length)
-        
-        # Create a mask to filter out the padding values
-        mask = times_band != padding_value
-        times_band = times_band[mask]
-        fluxes_band = fluxes_band[mask]
-        predictions_band = predictions_band[mask]
-        
         
         # Inverse normalization
-        predictions_band_scaled = flux_scaler.inverse_transform(predictions_band.reshape(-1, 1))
+        predictions_band_scaled = flux_scaler.inverse_transform(predictions[band].reshape(-1, 1))
         #predictions_band_scaled = predictions_band_scaled.reshape(predictions_band.shape)
-        fluxes_band_scaled = flux_scaler.inverse_transform(fluxes_band.reshape(-1, 1))
-        times_band_scaled = time_scaler.inverse_transform(times_band.reshape(-1, 1))
-        # Move the start index to the next band
-        start_idx = end_idx
+        fluxes_band_scaled = flux_scaler.inverse_transform(fluxes[band].reshape(-1, 1))
+        times_band_scaled = time_scaler.inverse_transform(times[band].reshape(-1, 1))
+        times_pred_band_scaled = time_scaler.inverse_transform(times_pred[band].reshape(-1, 1))
         
         ax = axes[i]
         # Plot training and testing data
         ax.plot(times_band_scaled, fluxes_band_scaled, '-o', color=colors[i], label='Actual Flux', alpha=0.7)
-
-        # Plot predictions (assuming predictions are aligned with times after n_steps)
-        ax.plot(times_band_scaled, predictions_band_scaled, '-x', color='black', label='Predicted Flux', markersize=4, markeredgewidth=2)
-
+        ax.plot(times_pred_band_scaled, predictions_band_scaled, '-x', color='black', label='Predicted Flux', markersize=4, markeredgewidth=2)
         # Setting plot titles and labels
         ax.set_title(f'Flux Prediction for Band {band} - OID {obj_id}')
         ax.set_xlabel('Time')
         ax.set_ylabel('Flux')
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 8})
-        #print(len(times_band))
 
     fig_title = 'Prediction of All AGN Data'
     fig.suptitle(fig_title)
@@ -704,15 +782,87 @@ def plot_band_data(padded_times, padded_fluxes, predictions, max_length_per_band
     print(f"Saved figure to {save_path}")
         
     
-#print(predictions_single, len(predictions_single[0]))
-#print(max_length_per_band)
 plot_band_data(padded_times_tensor_single.numpy(), padded_fluxes_tensor_single.numpy(), predictions_single, max_length_per_band)
+# -
+
+# ### Test AGN with train set
+
+valid_data_found = False
+obj_id = 0
+while obj_id < len(padded_times_train) and not valid_data_found:
+    try:
+        
+        # Convert the selected object's data to PyTorch tensors
+        padded_times_tensor_single = torch.tensor([padded_times_train[obj_id]], dtype=torch.float32)
+        padded_fluxes_tensor_single = torch.tensor([padded_fluxes_train[obj_id]], dtype=torch.float32)
+        
+        # Combine time and flux into a single input tensor
+        input_tensor_single = torch.stack((padded_times_tensor_single, padded_fluxes_tensor_single), dim=-1)  # (num_bands, seq_len, 2)
+        target_tensor_single = padded_fluxes_tensor_single.unsqueeze(-1)  # (num_bands, seq_len, 1)
+        
+        input_tensor_single = input_tensor_single.to(device)
+        
+        # Use the model to make predictions
+        model.eval()
+        with torch.no_grad():
+            predictions_single = model(input_tensor_single)
+            predictions_single = predictions_single.cpu()  # Move tensor to CPU
+        
+        valid_data_found = True
+    except Exception as e:
+        obj_id += 1
+        print(f"Error encountered: {e}. Retrying with a different object.")
+
+
+# +
+def plot_band_data_train(padded_times, padded_fluxes, predictions, max_length_per_band, padding_value=-1):
+    # Start index for each band in the concatenated array
+    fig, axes = plt.subplots(nrows=len(bands_inlc), figsize=(14, 10))
+    # Adjust first and last item not predicted
+    padded_times_adj = padded_times[0]
+    padded_fluxes_adj = padded_fluxes[0]
+
+
+    times, fluxes, times_pred, predictions, masks, mask_preds = process_band_data(padded_times[0], padded_fluxes[0], predictions[0], max_length_per_band, padding_value)
+    # Iterate over each band using the lengths specifiedprint
+    for i, (band, length) in enumerate(max_length_per_band.items()):
+        
+        # Inverse normalization
+        predictions_band_scaled = flux_scaler.inverse_transform(predictions[band].reshape(-1, 1))
+        fluxes_band_scaled = flux_scaler.inverse_transform(fluxes[band].reshape(-1, 1))
+        times_band_scaled = time_scaler.inverse_transform(times[band].reshape(-1, 1))
+        times_pred_band_scaled = time_scaler.inverse_transform(times_pred[band].reshape(-1, 1))
+        
+        ax = axes[i]
+        # Plot training and testing data
+        ax.plot(times_band_scaled, fluxes_band_scaled, '-o', color=colors[i], label='Actual Flux', alpha=0.7)
+        ax.plot(times_pred_band_scaled, predictions_band_scaled, '-x', color='black', label='Predicted Flux', markersize=4, markeredgewidth=2)
+        # Setting plot titles and labels
+        ax.set_title(f'Flux Prediction for Band {band} - OID {obj_id}')
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Flux')
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 8})
+
+    fig_title = 'Prediction of train AGN Data'
+    fig.suptitle(fig_title)
+    plt.tight_layout()
+    plt.show()
+    
+    # Save the figure
+    if not os.path.exists(os.path.join(base_directory,'output')):
+        os.makedirs(os.path.join(base_directory,'output'))
+    save_path = os.path.join(os.path.join(base_directory,'output'), fig_title.replace(' ', '_') + '.png')
+    fig.savefig(save_path)
+    print(f"Saved figure to {save_path}")
+        
+
+plot_band_data_train(padded_times_tensor_single.numpy(), padded_fluxes_tensor_single.numpy(), predictions_single, max_length_per_band_train)
 # -
 
 # ### Test AGN with test set
 
 valid_data_found = False
-obj_id = 1
+obj_id = 0
 while obj_id < len(padded_times_train) and not valid_data_found:
     try:
         
@@ -732,9 +882,6 @@ while obj_id < len(padded_times_train) and not valid_data_found:
             predictions_single = model(input_tensor_single)
             predictions_single = predictions_single.cpu()  # Move tensor to CPU
         
-        # Apply the mask to the predictions
-        mask = padded_times_tensor_single != padding_value
-        predicted_fluxes_masked_single = np.where(mask.cpu().numpy(), predictions_single.squeeze(-1), np.nan)
         
         valid_data_found = True
     except Exception as e:
@@ -748,43 +895,31 @@ def plot_band_data_test(padded_times_train, padded_fluxes_train, padded_times_te
     start_idx_train = 0
     start_idx_test = 0
     fig, axes = plt.subplots(nrows=len(bands_inlc), figsize=(14, 10))
+
+    times_test, fluxes_test, times_test_pred, predictions, masks, mask_preds = process_band_data(padded_times_test, padded_fluxes_test, predictions[0], max_length_per_band, padding_value)
     
-    # Iterate over each band using the lengths specified
     for i, band in enumerate(bands_inlc):
-        #print(band, bands_inlc)
         length_train = max_length_per_band_train[band]
-        length_test = max_length_per_band[band]
         # End index for the current band
         end_idx_train = start_idx_train + length_train
-        end_idx_test = start_idx_test + length_test
         
         # Extract times, fluxes, and predictions for the current band
         times_band_train = padded_times_train[start_idx_train:end_idx_train]
         fluxes_band_train = padded_fluxes_train[start_idx_train:end_idx_train]
-        times_band_test = padded_times_test[start_idx_test:end_idx_test]
-        fluxes_band_test = padded_fluxes_test[start_idx_test:end_idx_test]
-        predictions_band = predictions[0][start_idx_test:end_idx_test]
-        #print(len(times_band),start_idx,end_idx ,length)
         
         # Create a mask to filter out the padding values
         mask_train = times_band_train != padding_value
         times_band_train = times_band_train[mask_train]
         fluxes_band_train = fluxes_band_train[mask_train]
-        
-        mask_test = times_band_test != padding_value
-        times_band_test = times_band_test[mask_test]
-        fluxes_band_test = fluxes_band_test[mask_test]
-        predictions_band = predictions_band[mask_test]
-        
         # Inverse normalization
-        predictions_band_scaled = flux_scaler.inverse_transform(predictions_band.reshape(-1, 1))
+        predictions_band_scaled = flux_scaler.inverse_transform(predictions[band].reshape(-1, 1))
         fluxes_band_scaled_train = flux_scaler.inverse_transform(fluxes_band_train.reshape(-1, 1))
         times_band_scaled_train = time_scaler.inverse_transform(times_band_train.reshape(-1, 1))
-        fluxes_band_scaled_test = flux_scaler.inverse_transform(fluxes_band_test.reshape(-1, 1))
-        times_band_scaled_test = time_scaler.inverse_transform(times_band_test.reshape(-1, 1))
+        fluxes_band_scaled_test = flux_scaler.inverse_transform(fluxes_test[band].reshape(-1, 1))
+        times_band_scaled_test = time_scaler.inverse_transform(times_test[band].reshape(-1, 1))
+        times_pred_band_scaled = time_scaler.inverse_transform(times_test_pred[band].reshape(-1, 1))
         # Move the start index to the next band
         start_idx_train = end_idx_train
-        start_idx_test = end_idx_test
         
         ax = axes[i]
         # Plot training and testing data
@@ -792,14 +927,22 @@ def plot_band_data_test(padded_times_train, padded_fluxes_train, padded_times_te
 
         # Plot predictions (assuming predictions are aligned with times after n_steps)
         ax.plot(times_band_scaled_test[padded_test_idx_all[band]], fluxes_band_scaled_test[padded_test_idx_all[band]], '*', color='r', label='Actual Flux', markersize=6, alpha=0.9)
-        ax.plot(times_band_scaled_test[padded_test_idx_all[band]], predictions_band_scaled[padded_test_idx_all[band]], 'x', color='black', label='Predicted Test Flux', markersize=4, markeredgewidth=2)
+
+
+        
+        if i == 0:
+            adjusted_indexes = padded_test_idx_all[band] - 1
+            ax.plot(times_band_scaled_test[padded_test_idx_all[band]], predictions_band_scaled[adjusted_indexes], 'x', color='black', label='Predicted Test Flux', markersize=4, markeredgewidth=2)
+        elif  i == len(max_length_per_band) - 1: # Same indexe as only eliminated the last one
+            ax.plot(times_band_scaled_test[padded_test_idx_all[band]], predictions_band_scaled[padded_test_idx_all[band]], 'x', color='black', label='Predicted Test Flux', markersize=4, markeredgewidth=2)
+        else: 
+            ax.plot(times_band_scaled_test[padded_test_idx_all[band]], predictions_band_scaled[padded_test_idx_all[band]], 'x', color='black', label='Predicted Test Flux', markersize=4, markeredgewidth=2)
         
         # Setting plot titles and labels
         ax.set_title(f'Flux Prediction for Band {band} - OID {obj_id}')
         ax.set_xlabel('Time')
         ax.set_ylabel('Flux')
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 8})
-        #print(len(times_band))
     
     fig_title = 'Test Set Prediction'
     fig.suptitle(fig_title)
@@ -838,6 +981,11 @@ def evaluate_model(model, dataloader, padded_test_idx_accum, criterion, device):
             
             # Forward pass
             outputs = model(inputs)
+            # Add missing values to the outputs filling with targets
+            outputs = torch.cat((targets[:, 0:1], outputs.squeeze(-1), targets[:, -2:-1]), dim=1)
+            
+            if outputs.shape[1] != targets.shape[1]:
+                raise ValueError("Output and target sequence lengths do not match.")
             
             outputs_masked = []
             targets_masked = []
@@ -872,190 +1020,6 @@ wandb.log({"test_loss": avg_test_loss})
 wandb.finish()
 
 print("Test evaluation complete.")
-
-
-# -
-
-# ## Predict Missing Values
-
-# ### Obtain time gaps of AGN (only the first AGN)
-
-def find_missing_times(agn_id, dataframe, bands, max_time_coverage, time_scaler):
-    missing_time_coverage = {}
-
-    for band in bands:
-        # Get all times for the specified AGN in the current band
-        agn_times = dataframe.xs((agn_id, band), level=('objectid', 'band')).index.get_level_values('time').unique()
-
-        # Get the times for the AGN with the most measurements in the current band
-        max_coverage_times = max_time_coverage[band]
-
-        # Determine missing times by finding set differences
-        missing_times = np.setdiff1d(max_coverage_times, agn_times)
-        #missing_time_coverage[band] = missing_times
-        
-        missing_time_coverage[band] = time_scaler.transform(missing_times.reshape(-1, 1)).flatten()
-
-    return missing_time_coverage
-
-
-# +
-first_oid = df_lc.index.get_level_values('objectid').unique()[0]  
-
-# Get missing times for the first AGN
-missing_time_coverage_per_band = find_missing_times(first_oid, df_lc, bands_inlc, max_time_coverage_per_band,time_scaler)
-
-
-# +
-def input_sequence_missing_data(obj_id, missing_time_coverage, df_lc, redshifts, max_length_per_band, bands_inlc=['zg', 'zr', 'zi', 'W1', 'W2'], padding_value=-1):
-    #objids = df_lc.index.get_level_values('objectid').unique()
-    if isinstance(redshifts, np.ndarray):
-        redshifts = dict(zip(objids, redshifts))
-        
-    obj_times, obj_fluxes= [], []
-    missing_indexes_band = {}
-    band_lenghts = {}
-    redshift = redshifts.get(obj_id, None)
-    if redshift is not None:
-        singleobj = df_lc.loc[obj_id]
-        label = singleobj.index.unique('label')[0]
-        bands = singleobj.index.get_level_values('band').unique()
-
-        if len(np.intersect1d(bands, bands_inlc)) == len(bands_inlc):
-            cumulative_length = 0  # This tracks the length of the sequence before adding the current band
-            for band in bands_inlc:
-                if (label, band) in singleobj.index:
-                    band_lc = singleobj.xs((label, band), level=('label', 'band'))
-                    band_lc_clean = band_lc[(band_lc.index.get_level_values('time') > 56000) & (band_lc.index.get_level_values('time') < 65000)]
-                    x = np.array(band_lc_clean.time_norm)
-                    y = np.array(band_lc_clean.flux_norm) 
-                    
-                    # Find missing times for the current band and calculate the mean of the existing fluxes
-                    missing_times = missing_time_coverage[band] if band in missing_time_coverage else []
-                    mean_flux = np.mean(y) if y.size > 0 else 0
-                    
-                    # Include missing times in the x array and mean flux value in the y array
-                    complete_x = np.concatenate([x, missing_times])
-                    missing_fluxes = np.full_like(missing_times, fill_value=mean_flux)
-                    complete_y = np.concatenate([y, missing_fluxes])
-
-                    # Resort the arrays by time
-                    resort_indices = np.argsort(complete_x)
-                    complete_x = complete_x[resort_indices]
-                    complete_y = complete_y[resort_indices]
-            
-                    
-                    # Determine the indexes of the missing times in the sorted array
-                    inserted_indexes = np.searchsorted(complete_x, missing_times)
-                    missing_indexes_band[band]= inserted_indexes.tolist()
-                    
-                    obj_times.extend(complete_x)
-                    obj_fluxes.extend(complete_y)
-                    band_lenghts[band] = len(complete_x)
-                        
-    return obj_times, obj_fluxes, band_lenghts, missing_indexes_band
-
-
-# Use the modified function to prepare the data
-seq_times, seq_fluxes, band_lenghts, missing_indexes_band = input_sequence_missing_data(first_oid,missing_time_coverage_per_band,df_lc_subset, redshifts_subset, max_length_per_band)
-seq_times = [seq_times]
-seq_fluxes = [seq_fluxes]
-# Convert the data to PyTorch tensors
-times_tensor = torch.tensor(seq_times, dtype=torch.float32)
-fluxes_tensor = torch.tensor(seq_fluxes, dtype=torch.float32)
-
-# Combine time and flux into a single input tensor
-input_tensor = torch.stack((times_tensor, fluxes_tensor), dim=-1)  # (num_samples, num_bands, seq_len, 2)
-
-# Print shapes for debugging
-
-#print(f"Size of concatenated sequence: {sum(max_length_per_band.values())}")
-print(f"padded_times_tensor shape: {times_tensor.shape}")
-print(f"padded_fluxes_tensor shape: {fluxes_tensor.shape}")
-print(f"input_tensor shape: {input_tensor.shape}")
-#print(f"target_tensor shape: {target_tensor.shape}")
-print("Examples of the Data:")
-#print(padded_times[0][0],padded_fluxes[0][0])
-print("missing times indexes")
-#print(missing_indexes_band)
-# -
-
-# ### Predict
-
-# +
-input_tensor = input_tensor.to(device)
-
-# Use the model to make predictions
-model.eval()
-with torch.no_grad():
-    predictions_single = model(input_tensor)
-    predictions_single = predictions_single.cpu()  # Move tensor to CPU
-
-
-print(f"padded_fluxes_tensor shape: {predictions_single.shape}")
-
-
-# +
-def plot_band_data_without_mask(times, fluxes, predictions, band_lenghts, missing_indexes_band, padding_value=-1):
-    # Start index for each band in the concatenated array
-    start_idx = 0
-    fig, axes = plt.subplots(nrows=len(bands_inlc), figsize=(14, 10))
-    
-    # Iterate over each band using the lengths specified
-    for i, (band, length) in enumerate(band_lenghts.items()):
-        # End index for the current band
-        end_idx = start_idx + length
-        
-        # Extract times, fluxes, and predictions for the current band
-        times_band = times[0][start_idx:end_idx]
-        fluxes_band = fluxes[0][start_idx:end_idx]
-        predictions_band = predictions[0][start_idx:end_idx]        
-        
-        # Inverse normalization
-        predictions_band_scaled = flux_scaler.inverse_transform(predictions_band.reshape(-1, 1))
-        #predictions_band_scaled = predictions_band_scaled.reshape(predictions_band.shape)
-        fluxes_band_scaled = flux_scaler.inverse_transform(fluxes_band.reshape(-1, 1))
-        times_band_scaled = time_scaler.inverse_transform(times_band.reshape(-1, 1))
-        # Move the start index to the next band
-        start_idx = end_idx
-        #print(fluxes_band[:2],"-----------",fluxes_band_scaled[:2])
-        
-        ax = axes[i]
-        
-        # Plot data
-        
-        combined_fluxes = [predictions_band_scaled[i] if i in missing_indexes_band[band] else flux for i, flux in enumerate(fluxes_band_scaled)]
-        ax.plot(times_band_scaled, combined_fluxes , '-*', color='r', label='Actual Flux', alpha=0.7)
-        
-        ax.plot([times_band_scaled[i] for i in range(len(times_band_scaled)) if i not in missing_indexes_band[band]], [fluxes_band_scaled[i] for i in range(len(times_band_scaled)) if i not in missing_indexes_band[band]] , '-o', color=colors[i], label='Actual Flux', alpha=0.7)
-        #ax.plot(times_band, fluxes_test, '*', color='red', label='Test Flux', markersize=6, markeredgewidth=2)
-        
-        
-        # Plot predictions (assuming predictions are aligned with times after n_steps)
-        ax.plot([times_band_scaled[i] for i in missing_indexes_band[band]], [predictions_band_scaled[i] for i in missing_indexes_band[band]], 'x', color='black', label='Predicted Flux', markersize=4, markeredgewidth=2)
-
-
-        # Setting plot titles and labels
-        ax.set_title(f'Flux Prediction for Band {band} - OID {obj_id}')
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Flux')
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 8})
-        #print(len(times_band))
-
-    fig_title = 'Missing Values Prediction'
-    fig.suptitle(fig_title)
-    plt.tight_layout()
-    plt.show()
-    
-    # Save the figure
-    if not os.path.exists(os.path.join(base_directory,'output')):
-        os.makedirs(os.path.join(base_directory,'output'))
-    save_path = os.path.join(os.path.join(base_directory,'output'), fig_title.replace(' ', '_') + '.png')
-    fig.savefig(save_path)
-    print(f"Saved figure to {save_path}")
-
-
-plot_band_data_without_mask(times_tensor.numpy(), fluxes_tensor.numpy(), predictions_single, band_lenghts, missing_indexes_band)
 # -
 
 # ## Save the Model
@@ -1097,121 +1061,6 @@ f.write(f"Model saved in: {os.path.join(base_directory, 'models/final_model.pth'
 f.close()
 # -
 
-# #### Load the Model
-
-model_load= MultiBandTimeSeriesBRNN(input_size, hidden_size, num_layers)
-model_load.load_state_dict(torch.load(saved_file_path))
-model_load.to(device)  # Ensure you move the model to the appropriate device
-
-# +
-#model = model_load
-# -
-
-# ##### test model
-
-valid_data_found = False
-obj_id = 0
-while obj_id < len(padded_times_train) and not valid_data_found:
-    try:
-        
-        # Extract the data for the selected object
-        df_lc_single = df_lc.loc[[obj_id]]
-        redshifts_single = {obj_id: redshifts[obj_id]}
-        
-        # Use the existing function to prepare the data for the selected object
-        padded_times_single, padded_fluxes_single = unify_lc_for_rnn_multi_band(df_lc_single, redshifts_single, max_length_per_band, bands_inlc=bands_inlc)
-        
-        # Convert the selected object's data to PyTorch tensors
-        padded_times_tensor_single = torch.tensor(padded_times_single, dtype=torch.float32)
-        padded_fluxes_tensor_single = torch.tensor(padded_fluxes_single, dtype=torch.float32)
-        
-        # Combine time and flux into a single input tensor
-        input_tensor_single = torch.stack((padded_times_tensor_single, padded_fluxes_tensor_single), dim=-1)  # (num_bands, seq_len, 2)
-        target_tensor_single = padded_fluxes_tensor_single.unsqueeze(-1)  # (num_bands, seq_len, 1)
-        
-        input_tensor_single = input_tensor_single.to(device)
-        
-        # Use the model to make predictions
-        model_load.eval()
-        with torch.no_grad():
-            predictions_single = model_load(input_tensor_single)
-            #predictions_single = predictions_single.squeeze(0).cpu().numpy()  # Remove batch dimension
-            predictions_single = predictions_single.cpu()  # Move tensor to CPU
-        
-        # Apply the mask to the predictions
-        mask = padded_times_tensor_single != padding_value
-        predicted_fluxes_masked_single = np.where(mask.cpu().numpy(), predictions_single.squeeze(-1), np.nan)
-        
-        valid_data_found = True
-    except Exception as e:
-        obj_id += 1
-        print(f"Error encountered: {e}. Retrying with a different object.")
-
-
-# +
-def plot_band_data(padded_times, padded_fluxes, predictions, max_length_per_band, padding_value=-1):
-    # Start index for each band in the concatenated array
-    start_idx = 0
-    fig, axes = plt.subplots(nrows=len(bands_inlc), figsize=(14, 10))
-    
-    # Iterate over each band using the lengths specifiedprint
-    for i, (band, length) in enumerate(max_length_per_band.items()):
-        # End index for the current band
-        end_idx = start_idx + length
-        
-        # Extract times, fluxes, and predictions for the current band
-        times_band = padded_times[0][start_idx:end_idx]
-        fluxes_band = padded_fluxes[0][start_idx:end_idx]
-        predictions_band = predictions[0][start_idx:end_idx]
-        #print(len(times_band),start_idx,end_idx ,length)
-        
-        # Create a mask to filter out the padding values
-        mask = times_band != padding_value
-        times_band = times_band[mask]
-        fluxes_band = fluxes_band[mask]
-        predictions_band = predictions_band[mask]
-        
-        
-        # Inverse normalization
-        predictions_band_scaled = flux_scaler.inverse_transform(predictions_band.reshape(-1, 1))
-        #predictions_band_scaled = predictions_band_scaled.reshape(predictions_band.shape)
-        fluxes_band_scaled = flux_scaler.inverse_transform(fluxes_band.reshape(-1, 1))
-        times_band_scaled = time_scaler.inverse_transform(times_band.reshape(-1, 1))
-        # Move the start index to the next band
-        start_idx = end_idx
-        
-        ax = axes[i]
-        # Plot training and testing data
-        ax.plot(times_band_scaled, fluxes_band_scaled, '-o', color=colors[i], label='Actual Flux', alpha=0.7)
-        #ax.plot(times_band, fluxes_test, '*', color='red', label='Test Flux', markersize=6, markeredgewidth=2)
-
-        # Plot predictions (assuming predictions are aligned with times after n_steps)
-        ax.plot(times_band_scaled, predictions_band_scaled, '-x', color='black', label='Predicted Flux', markersize=4, markeredgewidth=2)
-
-        # Setting plot titles and labels
-        ax.set_title(f'Flux Prediction for Band {band} - OID {obj_id}')
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Flux')
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 8})
-        #print(len(times_band))
-
-    fig_title = 'Prediction of All AGN Data'
-    fig.suptitle(fig_title)
-    plt.tight_layout()
-    plt.show()
-    
-    # Save the figure
-    if not os.path.exists(os.path.join(base_directory,'output')):
-        os.makedirs(os.path.join(base_directory,'output'))
-    save_path = os.path.join(os.path.join(base_directory,'output'), fig_title.replace(' ', '_') + '.png')
-    fig.savefig(save_path)
-    print(f"Saved figure to {save_path}")
-    
-#print(predictions_single, len(predictions_single[0]))
-#print(max_length_per_band)
-plot_band_data(padded_times_tensor_single.numpy(), padded_fluxes_tensor_single.numpy(), predictions_single, max_length_per_band)
-# -
-
 # ## Log End
 
 f = open(os.path.join(base_directory, 'BRRN_log_run.txt'), 'a')
@@ -1219,3 +1068,15 @@ current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S %
 current_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 f.write(f"\nRun Completed\nTime: {current_time}\nDate: {current_date}\n")
 f.close()
+
+# ## Load the Model
+
+saved_file_path_load = './BRRN_runs/BRRN_run_11/models/best_model_checkpoint.pth'
+
+# +
+#model_load= CustomMultiBandTimeSeriesBRNN(input_size, hidden_size, num_layers)
+#model_load.load_state_dict(torch.load(saved_file_path_load))
+#model_load.to(device)  # Ensure you move the model to the appropriate device
+
+# +
+#model = model_load
