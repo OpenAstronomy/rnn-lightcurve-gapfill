@@ -45,3 +45,45 @@ After processing through the Bidirectional LSTM layers, the data flows through t
 
 ### Model Training and Prediction
 During training, the model learns by adjusting its parameters to minimize the loss function. The training involves feeding batches of data through the model, calculating the loss, and updating the model parameters via backpropagation. For prediction, the trained model takes incomplete light curves as input and outputs the imputed full light curves, filling in the missing values based on the learned temporal dynamics.
+
+
+
+## Neural Network for OIII Luminosity Prediction
+
+### Overview
+This section of the project develops a neural network model designed to predict the OIII luminosity of AGN based on light curve data interpolated by both linear interpolation and our custom BRNN model. The goal was to assess the efficacy of using interpolated light curve data as input features for predicting critical astrophysical quantities.
+
+### Model Design
+The neural network designed for OIII luminosity prediction consists of several layers structured to process the interpolated light curve data effectively:
+
+- **Input Layer**: Accepts the interpolated flux values from AGN light curves as input.
+- **Hidden Layers**: Multiple dense layers with ReLU activations to introduce non-linearity and facilitate feature learning.
+- **Output Layer**: A single neuron outputting the predicted OIII luminosity value.
+
+The architecture aims to capture the underlying patterns in the light curve data that correlate with the OIII luminosity, using the following configuration:
+
+- **First Hidden Layer**: 4096 neurons
+- **Second Hidden Layer**: 4096 neurons
+- **Output Layer**: 1 neuron
+
+### Training and Evaluation
+The model is trained using the Mean Squared Error (MSE) loss function and optimized with the Adam optimizer. Training involves feeding batches of interpolated light curve data (both from linear interpolation and the BRNN model) and adjusting model weights to minimize prediction errors.
+
+
+
+## AGN Light Curve Autoencoder for Feature Extraction
+
+### Overview
+This section discusses the implementation of an autoencoder designed to extract features from AGN light curve data. The extracted features are aimed at improving the efficiency of downstream tasks such as classification and prediction of AGN properties.
+
+### Autoencoder Architecture
+The autoencoder is structured into two main components:
+- **Encoder**: Compresses the input light curve data into a lower-dimensional feature space.
+- **Decoder**: Attempts to reconstruct the input data from the compressed feature space, ensuring that the most significant features are retained.
+
+### Integration with BRNN
+The features extracted by the autoencoder are fed into a Bidirectional Recurrent Neural Network (BRNN) to enhance the predictive models by providing a richer representation of the input data. This integration showcases a hybrid approach combining unsupervised and supervised learning techniques to boost performance.
+
+### Training
+The autoencoder is trained using a subset of AGN light curves, with the objective to minimize reconstruction error, measured by the Mean Squared Error (MSE) between the original and reconstructed data.
+
