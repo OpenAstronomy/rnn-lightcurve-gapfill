@@ -17,6 +17,15 @@ A blog post that covers the development process of this project has been publish
 
 ## BRNN Custom Model Structure
 
+### Relevant Notebooks
+Please refer to the following Python notebooks in the repository for detailed code, analysis, and visualization related to the BRNN model:
+- `Kauffman_custom_BRNN_HyperParameter_Selection.py`: Contains the code for hyperparameter selection and fine-tuning of the model.
+- `Kauffman_custom_BRNN_train.py`: Contains the implementation of the BRNN model and the code for the training process of the final model.
+- `Kauffman_custom_BRNN_test.py`: Contains the evaluation metrics and testing procedures used to assess the performance of the BRNN model.
+- `Kauffman_custom_BRNN_data_generation.py`: Contains the code for generating the final AGN dataset with missing values.
+
+
+
 ### Model Overview
 This custom Bidirectional Recurrent Neural Network (BRNN) is specifically designed for handling and imputing missing values in light curve data of Active Galactic Nuclei (AGN) from the Kauffman dataset. The light curves in this dataset are obtained from the Zwicky Transient Facility (ZTF) and the WISE telescopes, capturing observations across multiple bands, specifically `zg`, `zr`, `zi`, `W1`, and `W2`.
 
@@ -50,6 +59,13 @@ During training, the model learns by adjusting its parameters to minimize the lo
 
 ## Neural Network for OIII Luminosity Prediction
 
+
+### Relevant Notebooks
+Please refer to the following Python notebooks in the repository for detailed code, analysis, and visualization related to the OIII Luminosity model:
+- `Kauffman_O3_prediction.py`: Contains the code for the neural network model for OIII luminosity prediction using the generated datasets of AGNs.
+- `Kauffman_Basic_Interpolations.py`: Contains the implementation of basic models such as Linear interpolation and KNN to evaluate their performance and obtain the final dataset of AGNs.
+
+
 ### Overview
 This section of the project develops a neural network model designed to predict the OIII luminosity of AGN based on light curve data interpolated by both linear interpolation and our custom BRNN model. The goal was to assess the efficacy of using interpolated light curve data as input features for predicting critical astrophysical quantities.
 
@@ -72,6 +88,13 @@ The model is trained using the Mean Squared Error (MSE) loss function and optimi
 
 
 ## AGN Light Curve Autoencoder for Feature Extraction
+
+### Relevant Notebooks
+Please refer to the following Python notebooks in the repository for detailed code, analysis, and visualization related to the Autoencoder model:
+- `Kauffman_Autoencoder.py`: Contains the code for the training process of the Autoencoder model (encoder and decoder) to obtain and save the necessary encoder parameters that will be integrated into the BRNN model.
+- `Kauffman_custom_BRNN_Autoencoder.py`: Contains the implementation of training and testing the new custom BRNN model that incorporates the pretrained encoder.
+
+
 
 ### Overview
 This section discusses the implementation of an autoencoder designed to extract features from AGN light curve data. The extracted features are aimed at improving the efficiency of downstream tasks such as classification and prediction of AGN properties.
